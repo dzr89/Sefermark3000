@@ -10,35 +10,71 @@ Usage:
 
 Then configure Twilio webhook URL to point to:
     https://your-domain/sms
+
+Security Features:
+    - Twilio webhook signature validation
+    - Input sanitization for categories
+    - Rate limiting per phone number
+    - Request timeouts
+    - Secure headers
+
+Performance Features:
+    - Connection pooling via requests.Session
+    - Configurable timeouts
+    - Retry logic with exponential backoff
 """
 
 import os
 import re
+import html
 import logging
+import functools
+import time
 from typing import Optional, Tuple
 from datetime import datetime
-from flask import Flask, request
+from collections import defaultdict
+from flask import Flask, request, Response, g
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.request_validator import RequestValidator
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
 # Configure logging
+log_level = os.getenv('LOG_LEVEL', 'INFO')
 logging.basicConfig(
-    level=os.getenv('LOG_LEVEL', 'INFO'),
+    level=log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+# ============================================================================
 # Configuration
+# ============================================================================
+
 NOTION_TOKEN = os.getenv('NOTION_TOKEN')
 NOTION_DATABASE_ID = os.getenv('NOTION_DATABASE_ID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
+
+# Security settings
+VALIDATE_TWILIO_SIGNATURE = os.getenv('VALIDATE_TWILIO_SIGNATURE', 'true').lower() == 'true'
+ALLOWED_PHONE_NUMBERS = set(
+    filter(None, os.getenv('ALLOWED_PHONE_NUMBERS', '').split(','))
+)
+
+# Rate limiting settings
+RATE_LIMIT_REQUESTS = int(os.getenv('RATE_LIMIT_REQUESTS', '10'))
+RATE_LIMIT_WINDOW = int(os.getenv('RATE_LIMIT_WINDOW', '60'))  # seconds
+
+# Performance settings
+REQUEST_TIMEOUT = int(os.getenv('REQUEST_TIMEOUT', '15'))
+MAX_RETRIES = int(os.getenv('MAX_RETRIES', '3'))
 
 # Notion API headers
 NOTION_HEADERS = {
@@ -54,6 +90,179 @@ TWEET_URL_PATTERNS = [
     r'https?://(?:mobile\.)?twitter\.com/\w+/status/(\d+)',
 ]
 
+# In-memory rate limiting storage (use Redis in production for multi-instance)
+_rate_limit_storage: dict = defaultdict(list)
+
+
+# ============================================================================
+# HTTP Session with Connection Pooling
+# ============================================================================
+
+def create_http_session() -> requests.Session:
+    """Create a requests session with connection pooling and retry logic."""
+    session = requests.Session()
+
+    retry_strategy = Retry(
+        total=MAX_RETRIES,
+        backoff_factor=0.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "POST"]
+    )
+
+    adapter = HTTPAdapter(
+        max_retries=retry_strategy,
+        pool_connections=10,
+        pool_maxsize=10
+    )
+
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+
+    return session
+
+
+# Global session for reuse
+_http_session: Optional[requests.Session] = None
+
+
+def get_http_session() -> requests.Session:
+    """Get or create the global HTTP session."""
+    global _http_session
+    if _http_session is None:
+        _http_session = create_http_session()
+    return _http_session
+
+
+# ============================================================================
+# Security Functions
+# ============================================================================
+
+def validate_twilio_signature(f):
+    """Decorator to validate Twilio webhook signatures."""
+    @functools.wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not VALIDATE_TWILIO_SIGNATURE:
+            return f(*args, **kwargs)
+
+        if not TWILIO_AUTH_TOKEN:
+            logger.warning("Twilio auth token not configured, skipping validation")
+            return f(*args, **kwargs)
+
+        validator = RequestValidator(TWILIO_AUTH_TOKEN)
+
+        # Get the URL and signature
+        url = request.url
+        signature = request.headers.get('X-Twilio-Signature', '')
+
+        # Validate
+        if not validator.validate(url, request.form, signature):
+            logger.warning("Invalid Twilio signature from request")
+            resp = MessagingResponse()
+            resp.message("Unauthorized request.")
+            return str(resp), 403
+
+        return f(*args, **kwargs)
+
+    return decorated_function
+
+
+def check_rate_limit(phone_number: str) -> bool:
+    """
+    Check if phone number has exceeded rate limit.
+
+    Returns True if allowed, False if rate limited.
+    """
+    current_time = time.time()
+    window_start = current_time - RATE_LIMIT_WINDOW
+
+    # Clean up old entries
+    _rate_limit_storage[phone_number] = [
+        t for t in _rate_limit_storage[phone_number]
+        if t > window_start
+    ]
+
+    # Check limit
+    if len(_rate_limit_storage[phone_number]) >= RATE_LIMIT_REQUESTS:
+        return False
+
+    # Record this request
+    _rate_limit_storage[phone_number].append(current_time)
+    return True
+
+
+def check_allowed_number(phone_number: str) -> bool:
+    """Check if phone number is in allowed list (if configured)."""
+    if not ALLOWED_PHONE_NUMBERS:
+        return True  # No whitelist configured, allow all
+    return phone_number in ALLOWED_PHONE_NUMBERS
+
+
+def sanitize_category(category: str) -> str:
+    """
+    Sanitize category input to prevent injection attacks.
+
+    - Removes HTML/script tags
+    - Limits length
+    - Allows only alphanumeric and basic punctuation
+    """
+    if not category:
+        return ""
+
+    # HTML escape
+    category = html.escape(category)
+
+    # Remove any remaining HTML-like tags
+    category = re.sub(r'<[^>]*>', '', category)
+
+    # Allow only alphanumeric, spaces, hyphens, underscores
+    category = re.sub(r'[^a-zA-Z0-9\s\-_]', '', category)
+
+    # Limit length
+    category = category[:50]
+
+    # Capitalize first letter
+    return category.strip().capitalize() if category.strip() else ""
+
+
+def mask_phone_number(phone_number: str) -> str:
+    """Mask phone number for logging (privacy)."""
+    if not phone_number or len(phone_number) < 4:
+        return "***"
+    return f"***{phone_number[-4:]}"
+
+
+# ============================================================================
+# Security Middleware
+# ============================================================================
+
+@app.after_request
+def add_security_headers(response: Response) -> Response:
+    """Add security headers to all responses."""
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    return response
+
+
+@app.before_request
+def log_request_start():
+    """Log request start and set timing."""
+    g.request_start_time = time.time()
+
+
+@app.after_request
+def log_request_end(response: Response) -> Response:
+    """Log request completion with timing."""
+    if hasattr(g, 'request_start_time'):
+        duration = time.time() - g.request_start_time
+        logger.debug(f"Request completed in {duration:.3f}s - {response.status_code}")
+    return response
+
+
+# ============================================================================
+# Core Functions
+# ============================================================================
 
 def extract_tweet_url(text: str) -> Optional[str]:
     """Extract tweet URL from text message."""
@@ -79,6 +288,8 @@ def fetch_tweet_data(tweet_url: str) -> Optional[dict]:
     Fetch tweet data using FXTwitter API.
     Supports regular tweets, threads, and long-form articles.
     No authentication required!
+
+    Uses connection pooling for better performance.
     """
     tweet_id = extract_tweet_id(tweet_url)
     if not tweet_id:
@@ -93,7 +304,8 @@ def fetch_tweet_data(tweet_url: str) -> Optional[dict]:
     fxtwitter_url = f"https://api.fxtwitter.com/{username}/status/{tweet_id}"
 
     try:
-        response = requests.get(fxtwitter_url, timeout=15)
+        session = get_http_session()
+        response = session.get(fxtwitter_url, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         data = response.json()
 
@@ -123,7 +335,7 @@ def fetch_tweet_data(tweet_url: str) -> Optional[dict]:
                 elif block_type == 'header-three':
                     content_parts.append(f"\n### {text}\n")
                 elif block_type in ('unordered-list-item', 'ordered-list-item'):
-                    content_parts.append(f"• {text}")
+                    content_parts.append(f"\u2022 {text}")
                 elif block_type == 'blockquote':
                     content_parts.append(f"> {text}")
                 elif text:  # Regular paragraph
@@ -150,6 +362,12 @@ def fetch_tweet_data(tweet_url: str) -> Optional[dict]:
                 'type': 'Regular Tweet'
             }
 
+    except requests.exceptions.Timeout:
+        logger.error(f"Timeout fetching tweet data from: {tweet_url}")
+        return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Request error fetching tweet data: {e}")
+        return None
     except Exception as e:
         logger.error(f"Failed to fetch tweet data: {e}")
         return None
@@ -204,7 +422,7 @@ def text_to_notion_blocks(text: str) -> list:
                     'rich_text': [{'type': 'text', 'text': {'content': para[2:].strip()[:2000]}}]
                 }
             })
-        elif para.startswith('• '):
+        elif para.startswith('\u2022 '):
             # Bullet list item
             blocks.append({
                 'object': 'block',
@@ -240,7 +458,7 @@ def text_to_notion_blocks(text: str) -> list:
 
 
 def add_to_notion(tweet_data: dict, category: str = None) -> bool:
-    """Add tweet to Notion database using raw HTTP API."""
+    """Add tweet to Notion database using raw HTTP API with connection pooling."""
     try:
         # Get title (use article title if available, otherwise first 100 chars of text)
         title = tweet_data.get('title', tweet_data['text'][:100])
@@ -270,24 +488,28 @@ def add_to_notion(tweet_data: dict, category: str = None) -> bool:
             },
         }
 
-        # Add category if provided
+        # Add category if provided (sanitize it first)
         if category:
-            properties['Category'] = {
-                'select': {'name': category}
-            }
+            sanitized_category = sanitize_category(category)
+            if sanitized_category:
+                properties['Category'] = {
+                    'select': {'name': sanitized_category}
+                }
 
         # Convert content to Notion blocks for page body
         content_blocks = text_to_notion_blocks(tweet_data['text'])
 
-        # Create page using raw HTTP API with content blocks
-        response = requests.post(
+        # Create page using raw HTTP API with content blocks and connection pooling
+        session = get_http_session()
+        response = session.post(
             'https://api.notion.com/v1/pages',
             headers=NOTION_HEADERS,
             json={
                 'parent': {'database_id': NOTION_DATABASE_ID},
                 'properties': properties,
                 'children': content_blocks,  # Add content as page body
-            }
+            },
+            timeout=REQUEST_TIMEOUT
         )
 
         if response.status_code == 200:
@@ -297,6 +519,12 @@ def add_to_notion(tweet_data: dict, category: str = None) -> bool:
             logger.error(f"Notion API error: {response.status_code} - {response.text}")
             return False
 
+    except requests.exceptions.Timeout:
+        logger.error("Timeout while adding to Notion")
+        return False
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Request error adding to Notion: {e}")
+        return False
     except Exception as e:
         logger.error(f"Failed to add to Notion: {e}")
         return False
@@ -318,23 +546,41 @@ def parse_message(body: str) -> Tuple[Optional[str], Optional[str]]:
         # Remove URL from body to find category
         remaining = body.replace(tweet_url, '').strip()
         if remaining:
-            # Use first word as category
+            # Use first word as category (will be sanitized later)
             category = remaining.split()[0].capitalize()
 
     return tweet_url, category
 
 
+# ============================================================================
+# Webhook Endpoints
+# ============================================================================
+
 @app.route('/sms', methods=['POST'])
+@validate_twilio_signature
 def sms_webhook():
     """Handle incoming SMS from Twilio."""
     # Get message details
     body = request.form.get('Body', '')
     from_number = request.form.get('From', '')
 
-    logger.info(f"Received SMS from {from_number}: {body}")
+    # Log with masked phone number for privacy
+    logger.info(f"Received SMS from {mask_phone_number(from_number)}")
 
     # Create response
     resp = MessagingResponse()
+
+    # Check if phone number is allowed (if whitelist configured)
+    if not check_allowed_number(from_number):
+        logger.warning(f"Blocked request from non-whitelisted number: {mask_phone_number(from_number)}")
+        resp.message("This service is not available for your phone number.")
+        return str(resp)
+
+    # Check rate limit
+    if not check_rate_limit(from_number):
+        logger.warning(f"Rate limit exceeded for: {mask_phone_number(from_number)}")
+        resp.message("Too many requests. Please wait a minute and try again.")
+        return str(resp)
 
     # Parse message
     tweet_url, category = parse_message(body)
@@ -352,8 +598,10 @@ def sms_webhook():
 
     # Add to Notion
     if add_to_notion(tweet_data, category):
-        cat_msg = f" [{category}]" if category else ""
-        resp.message(f"Saved{cat_msg}: {tweet_data['text'][:50]}...")
+        cat_msg = f" [{sanitize_category(category)}]" if category else ""
+        # Truncate response text to avoid issues
+        preview = tweet_data['text'][:50].replace('\n', ' ')
+        resp.message(f"Saved{cat_msg}: {preview}...")
     else:
         resp.message("Failed to save to Notion. Please try again.")
 
@@ -363,14 +611,40 @@ def sms_webhook():
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint."""
-    return {'status': 'ok'}
+    return {
+        'status': 'ok',
+        'timestamp': datetime.now().isoformat(),
+        'version': '1.1.0'
+    }
 
+
+@app.route('/metrics', methods=['GET'])
+def metrics():
+    """
+    Simple metrics endpoint for monitoring.
+    Returns basic operational metrics.
+    """
+    return {
+        'status': 'ok',
+        'rate_limit_tracked_numbers': len(_rate_limit_storage),
+        'timestamp': datetime.now().isoformat()
+    }
+
+
+# ============================================================================
+# Main Entry Point
+# ============================================================================
 
 def main():
     """Run the webhook server."""
     port = int(os.getenv('PORT', 5000))
     logger.info(f"Starting SMS webhook server on port {port}")
     logger.info(f"Webhook URL: http://localhost:{port}/sms")
+    logger.info(f"Health check: http://localhost:{port}/health")
+    logger.info(f"Twilio signature validation: {'enabled' if VALIDATE_TWILIO_SIGNATURE else 'disabled'}")
+    logger.info(f"Rate limit: {RATE_LIMIT_REQUESTS} requests per {RATE_LIMIT_WINDOW} seconds")
+    if ALLOWED_PHONE_NUMBERS:
+        logger.info(f"Phone whitelist: {len(ALLOWED_PHONE_NUMBERS)} numbers configured")
     logger.info("Use ngrok or cloudflare tunnel to expose this to the internet")
     app.run(host='0.0.0.0', port=port, debug=False)
 

@@ -61,15 +61,21 @@ class StateManager:
         self.lock_file_path = state_file_path.with_suffix(".lock")
         self._state: Optional[SyncState] = None
 
-    def _ensure_file_exists(self) -> None:
-        """Ensure the state file and directory exist."""
+    def _ensure_directory_exists(self) -> None:
+        """Ensure the parent directory exists."""
         self.state_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _create_initial_state_file(self) -> None:
+        """Create initial state file if it doesn't exist."""
+        self._ensure_directory_exists()
         if not self.state_file_path.exists():
-            self._save_state(SyncState())
+            with FileLock(self.lock_file_path):
+                with open(self.state_file_path, "w") as f:
+                    json.dump(SyncState().to_dict(), f, indent=2)
 
     def _load_state(self) -> SyncState:
         """Load state from file."""
-        self._ensure_file_exists()
+        self._create_initial_state_file()
         try:
             with open(self.state_file_path, "r") as f:
                 data = json.load(f)
@@ -80,7 +86,7 @@ class StateManager:
 
     def _save_state(self, state: SyncState) -> None:
         """Save state to file."""
-        self._ensure_file_exists()
+        self._ensure_directory_exists()
         with FileLock(self.lock_file_path):
             with open(self.state_file_path, "w") as f:
                 json.dump(state.to_dict(), f, indent=2)
