@@ -83,11 +83,14 @@ NOTION_HEADERS = {
     'Content-Type': 'application/json'
 }
 
-# Tweet URL patterns
+# Tweet URL patterns - supports various mobile and desktop URL formats
 TWEET_URL_PATTERNS = [
     r'https?://(?:www\.)?twitter\.com/\w+/status/(\d+)',
     r'https?://(?:www\.)?x\.com/\w+/status/(\d+)',
     r'https?://(?:mobile\.)?twitter\.com/\w+/status/(\d+)',
+    r'https?://(?:mobile\.)?x\.com/\w+/status/(\d+)',
+    r'https?://m\.twitter\.com/\w+/status/(\d+)',
+    r'https?://m\.x\.com/\w+/status/(\d+)',
 ]
 
 # In-memory rate limiting storage (use Redis in production for multi-instance)
