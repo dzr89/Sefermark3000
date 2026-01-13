@@ -37,6 +37,30 @@ class TestExtractTweetUrl:
         result = extract_tweet_url(text)
         assert result == "https://mobile.twitter.com/user/status/1111111111"
 
+    def test_extract_mobile_x_url(self):
+        """Test extracting mobile.x.com URLs."""
+        from twitter_notion_sync.sms_webhook import extract_tweet_url
+
+        text = "Check this https://mobile.x.com/user/status/3333333333"
+        result = extract_tweet_url(text)
+        assert result == "https://mobile.x.com/user/status/3333333333"
+
+    def test_extract_m_twitter_url(self):
+        """Test extracting m.twitter.com URLs."""
+        from twitter_notion_sync.sms_webhook import extract_tweet_url
+
+        text = "https://m.twitter.com/testuser/status/4444444444"
+        result = extract_tweet_url(text)
+        assert result == "https://m.twitter.com/testuser/status/4444444444"
+
+    def test_extract_m_x_url(self):
+        """Test extracting m.x.com URLs (short mobile format)."""
+        from twitter_notion_sync.sms_webhook import extract_tweet_url
+
+        text = "Look at https://m.x.com/someone/status/5555555555 cool right"
+        result = extract_tweet_url(text)
+        assert result == "https://m.x.com/someone/status/5555555555"
+
     def test_extract_www_url(self):
         """Test extracting www.twitter.com URLs."""
         from twitter_notion_sync.sms_webhook import extract_tweet_url
