@@ -1,86 +1,74 @@
-# Sefermark3000: Twitter Bookmarks to Notion Sync
+# Sefermark3000
 
-An automated service that syncs your Twitter bookmarks to a Notion database. Runs as a background service, polling for new bookmarks and adding them to your Notion workspace.
+Save Twitter/X content to Notion by texting a link to your phone number.
+
+## How It Works
+
+```
+1. Find a tweet or article on Twitter/X
+2. Share it → Copy link
+3. Text the link to your Twilio number
+4. Content is fetched (including full articles/essays)
+5. Entry is created in your Notion database
+6. You get a confirmation SMS back
+```
 
 ## Features
 
-- **Automatic sync**: Polls Twitter every 10-15 minutes for new bookmarks
-- **One-way sync**: Twitter → Notion only (unbookmarking doesn't remove from Notion)
-- **Duplicate prevention**: Tracks synced tweets locally to avoid duplicates
-- **Thread detection**: Identifies and labels threads
-- **Long-form detection**: Detects Twitter Notes/Articles and long tweets
-- **Rate limit handling**: Gracefully handles API rate limits
-- **Backfill support**: Sync existing bookmarks on initial setup
-- **macOS background service**: Runs automatically using launchd
+- **Full article extraction** - Long-form Twitter articles are fully extracted, not just previews
+- **Smart formatting** - Headings, paragraphs, lists, and quotes are preserved in Notion
+- **Categories** - Add a category by texting `tech https://x.com/...` or `https://x.com/... tech`
+- **No Twitter API needed** - Uses free FXTwitter API (no $200/month subscription required)
+- **Works from mobile** - Just text a link from your phone
 
-## Requirements
+## SMS Formats
 
-- Python 3.9+
-- Twitter Developer Account (free tier works)
-- Notion Integration
+| Format | Example |
+|--------|---------|
+| Just URL | `https://x.com/user/status/123` |
+| URL + category | `https://x.com/user/status/123 tech` |
+| Category + URL | `tech https://x.com/user/status/123` |
 
-## Quick Start
+## Setup
 
-### 1. Clone and Install Dependencies
+### 1. Clone and Install
 
 ```bash
-git clone https://github.com/yourusername/Sefermark3000.git
+git clone https://github.com/dzr89/Sefermark3000.git
 cd Sefermark3000
-
-# Create virtual environment (recommended)
 python3 -m venv venv
 source venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 2. Set Up Twitter API
+### 2. Create Notion Integration
 
-1. Go to [Twitter Developer Portal](https://developer.twitter.com/)
-2. Create a new project and app
-3. Enable OAuth 2.0 with these settings:
-   - Type: Confidential client
-   - Callback URL: `http://localhost:3000/callback`
-4. Request access to these scopes:
-   - `tweet.read`
-   - `users.read`
-   - `bookmark.read`
-   - `offline.access`
+1. Go to https://www.notion.so/my-integrations
+2. Create a new integration
+3. Copy the Integration Token
 
-Run the OAuth setup helper:
+### 3. Create Notion Database
 
-```bash
-cd src
-python -m twitter_notion_sync.oauth_setup
-```
+1. Create a new database in Notion
+2. Share it with your integration (... menu → Connections → Add your integration)
+3. Copy the database ID from the URL
 
-Follow the prompts to authorize and get your tokens.
+The service will automatically create these properties:
+- **Name** (title) - Tweet/article title
+- **Author** (text) - Author name and handle
+- **URL** (url) - Link to original tweet
+- **Bookmarked Date** (date) - When you saved it
+- **Type** (select) - Regular Tweet, Long-form, Thread
+- **Status** (select) - Unread, Read, Archived
+- **Category** (select) - Your custom categories
 
-### 3. Set Up Notion Integration
+### 4. Set Up Twilio
 
-1. Go to [Notion Integrations](https://www.notion.so/my-integrations)
-2. Create a new integration with these capabilities:
-   - Read content
-   - Insert content
-   - Update content
-3. Copy the integration token
+1. Create account at https://www.twilio.com/try-twilio
+2. Buy a phone number (~$1.15/month)
+3. Copy your Account SID and Auth Token
 
-4. Create a new Notion database with a "Title" column
-
-5. Share the database with your integration:
-   - Open the database in Notion
-   - Click "Share" → "Invite"
-   - Select your integration
-
-6. Get the database ID from the URL:
-   ```
-   https://www.notion.so/yourworkspace/DATABASE_ID?v=...
-   ```
-
-### 4. Configure Environment
-
-Copy the example environment file:
+### 5. Configure Environment
 
 ```bash
 cp .env.example .env
@@ -89,195 +77,119 @@ cp .env.example .env
 Edit `.env` with your credentials:
 
 ```bash
-# Twitter OAuth 2.0 (from oauth_setup.py)
-TWITTER_OAUTH2_CLIENT_ID=your_client_id
-TWITTER_OAUTH2_CLIENT_SECRET=your_client_secret
-TWITTER_OAUTH2_ACCESS_TOKEN=your_access_token
-TWITTER_OAUTH2_REFRESH_TOKEN=your_refresh_token
-
-# Notion API
 NOTION_TOKEN=your_notion_token
 NOTION_DATABASE_ID=your_database_id
-
-# Optional settings
-SYNC_INTERVAL_MINUTES=10
-LOG_LEVEL=INFO
+TWILIO_ACCOUNT_SID=your_twilio_sid
+TWILIO_AUTH_TOKEN=your_twilio_token
+TWILIO_PHONE_NUMBER=+1234567890
 ```
 
-### 5. Test the Setup
+### 6. Run the Server
 
 ```bash
+source venv/bin/activate
 cd src
-python -m twitter_notion_sync.sync_service --setup-only
+python -m twitter_notion_sync.sms_webhook
 ```
 
-If successful, you'll see "Setup completed successfully".
+### 7. Expose to Internet
 
-### 6. Run Initial Backfill (Optional)
+For Twilio to reach your server, you need a public URL.
 
-To sync existing bookmarks:
-
+**Development (ngrok):**
 ```bash
-python -m twitter_notion_sync.sync_service --backfill
+ngrok http 5000
 ```
 
-Or limit to recent bookmarks:
-
+**Production (Cloudflare Tunnel):**
 ```bash
-python -m twitter_notion_sync.sync_service --backfill --backfill-limit 100
+cloudflared tunnel run --url http://localhost:5000 sefermark
 ```
 
-### 7. Run the Service
+### 8. Configure Twilio Webhook
 
-**Single sync:**
+1. Go to Twilio Console → Phone Numbers → Your number
+2. Set "A Message Comes In" webhook to: `https://your-url/sms`
+3. Method: POST
+
+## Production Deployment
+
+For 24/7 operation, you have several options:
+
+### Option A: Cloud Deployment (Recommended)
+
+Deploy to Railway, Render, or Fly.io:
+
+1. Push to GitHub
+2. Connect your repo to the platform
+3. Set environment variables
+4. Deploy - you'll get a permanent URL
+
+### Option B: Self-hosted with systemd
+
+Create `/etc/systemd/system/sefermark.service`:
+
+```ini
+[Unit]
+Description=Sefermark3000 SMS Webhook
+After=network.target
+
+[Service]
+Type=simple
+User=your-user
+WorkingDirectory=/path/to/Sefermark3000
+Environment=PYTHONPATH=/path/to/Sefermark3000/src
+ExecStart=/path/to/Sefermark3000/venv/bin/python -m twitter_notion_sync.sms_webhook
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then:
 ```bash
-python -m twitter_notion_sync.sync_service --once
+sudo systemctl enable sefermark
+sudo systemctl start sefermark
 ```
 
-**Continuous service (foreground):**
-```bash
-python -m twitter_notion_sync.sync_service
-```
+### Option C: macOS with launchd
 
-**macOS background service:**
 ```bash
 ./scripts/setup_macos_service.sh
-```
-
-## Notion Database Schema
-
-The service creates/uses these properties:
-
-| Property | Type | Description |
-|----------|------|-------------|
-| Title | Title | First 100 chars of tweet, or "Tweet from @handle…" |
-| Content | Rich Text | Full tweet text (or combined thread) |
-| Author | Rich Text | "Display Name (@handle)" |
-| URL | URL | Direct link to tweet |
-| Bookmarked Date | Date | When you bookmarked it |
-| Tweet Date | Date | When originally posted |
-| Type | Select | "Regular Tweet", "Thread", or "Long-form" |
-| Status | Select | "Unread" (default), "Read", or "Archived" |
-
-## Usage
-
-### Command Line Options
-
-```
-python -m twitter_notion_sync.sync_service [OPTIONS]
-
-Options:
-  -c, --config PATH        Path to .env file
-  --backfill               Run one-time backfill of existing bookmarks
-  --backfill-limit N       Max bookmarks for backfill
-  --once                   Run single sync cycle and exit
-  --setup-only             Only validate setup
-  --status                 Show current sync status
-```
-
-### Managing the macOS Service
-
-```bash
-# Start
-launchctl start com.sefermark.twitter-notion-sync
-
-# Stop
-launchctl stop com.sefermark.twitter-notion-sync
-
-# View logs
-tail -f ~/.twitter_notion_sync/sync.log
-
-# Uninstall
-./scripts/uninstall_macos_service.sh
-```
-
-### Check Sync Status
-
-```bash
-python -m twitter_notion_sync.sync_service --status
-```
-
-## File Locations
-
-| File | Purpose |
-|------|---------|
-| `~/.twitter_notion_sync/state.json` | Tracks synced tweet IDs |
-| `~/.twitter_notion_sync/sync.log` | Service logs |
-| `~/Library/LaunchAgents/com.sefermark.twitter-notion-sync.plist` | macOS service config |
-
-## Troubleshooting
-
-### "Authentication failed" error
-
-Your Twitter tokens may have expired. Re-run the OAuth setup:
-
-```bash
-python -m twitter_notion_sync.oauth_setup
-```
-
-### Rate limit errors
-
-The service handles rate limits automatically, but if you're hitting them frequently:
-
-1. Increase `SYNC_INTERVAL_MINUTES` in `.env`
-2. Wait 15 minutes for the rate limit window to reset
-
-### Notion "validation_error"
-
-Make sure:
-1. The database is shared with your integration
-2. The database has a "Title" property (required)
-
-### Service not starting
-
-Check the logs:
-
-```bash
-tail -f ~/.twitter_notion_sync/launchd_stderr.log
-tail -f ~/.twitter_notion_sync/sync.log
-```
-
-### Clearing sync state
-
-To re-sync all bookmarks:
-
-```bash
-rm ~/.twitter_notion_sync/state.json
-python -m twitter_notion_sync.sync_service --backfill
 ```
 
 ## Architecture
 
 ```
-src/twitter_notion_sync/
-├── __init__.py           # Package metadata
-├── config.py             # Configuration management
-├── twitter_client.py     # Twitter API client
-├── notion_client.py      # Notion API client
-├── state_manager.py      # Local state persistence
-├── sync_service.py       # Main sync service
-└── oauth_setup.py        # OAuth 2.0 setup helper
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   Mobile    │────▶│   Twilio    │────▶│   Server    │
+│  (SMS link) │     │  (webhook)  │     │  (Flask)    │
+└─────────────┘     └─────────────┘     └──────┬──────┘
+                                               │
+                    ┌─────────────┐     ┌──────▼──────┐
+                    │   Notion    │◀────│  FXTwitter  │
+                    │  (database) │     │    (API)    │
+                    └─────────────┘     └─────────────┘
 ```
 
-## API Rate Limits
+## Files
 
-**Twitter (Free Tier):**
-- Bookmarks: 180 requests / 15 minutes
-- User lookup: 75 requests / 15 minutes
+```
+src/twitter_notion_sync/
+├── sms_webhook.py      # Main SMS webhook service
+├── config.py           # Configuration management
+├── notion_client.py    # Notion API client
+└── ...                 # Legacy Twitter API code (unused)
+```
 
-**Notion:**
-- 3 requests / second average
-- Burst up to 50/second
+## API Used
 
-The service automatically handles these limits with exponential backoff.
-
-## Security Notes
-
-- Never commit your `.env` file
-- The state file contains tweet IDs but no sensitive data
-- OAuth tokens should be kept secure
-- Consider using a secrets manager for production
+This project uses the [FXTwitter API](https://github.com/FixTweet/FxTwitter) which:
+- Requires no authentication
+- Returns full article content
+- Has no rate limits for normal use
+- Is completely free
 
 ## License
 
-MIT License - see LICENSE file for details.
+MIT License

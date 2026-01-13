@@ -241,7 +241,7 @@ class NotionClient:
         }
 
         # Add dates if available
-        if tweet.tweet_date := self._format_datetime(tweet.created_at):
+        if tweet_date := self._format_datetime(tweet.created_at):
             properties[PROPERTY_TWEET_DATE] = {"date": {"start": tweet_date}}
 
         if tweet.bookmarked_at:
