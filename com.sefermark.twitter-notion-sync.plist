@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Service identifier -->
+    <key>Label</key>
+    <string>com.sefermark.twitter-notion-sync</string>
+
+    <!-- Path to Python and the sync script -->
+    <!-- NOTE: Update these paths to match your installation -->
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Python interpreter path - update if using a virtualenv -->
+        <string>/usr/local/bin/python3</string>
+        <string>-m</string>
+        <string>twitter_notion_sync.sync_service</string>
+    </array>
+
+    <!-- Working directory -->
+    <key>WorkingDirectory</key>
+    <string>/Users/YOUR_USERNAME/Sefermark3000/src</string>
+
+    <!-- Environment variables -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin</string>
+        <key>PYTHONPATH</key>
+        <string>/Users/YOUR_USERNAME/Sefermark3000/src</string>
+    </dict>
+
+    <!-- Run at load and keep alive -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <!-- Restart if exits with non-zero status -->
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Throttle restarts (wait 60 seconds between restarts) -->
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <!-- Log output -->
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USERNAME/.twitter_notion_sync/launchd_stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USERNAME/.twitter_notion_sync/launchd_stderr.log</string>
+
+    <!-- Nice level (lower priority) -->
+    <key>Nice</key>
+    <integer>10</integer>
+</dict>
+</plist>
