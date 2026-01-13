@@ -116,14 +116,37 @@ cloudflared tunnel run --url http://localhost:5000 sefermark
 
 For 24/7 operation, you have several options:
 
-### Option A: Cloud Deployment (Recommended)
+### Option A: Railway (Recommended)
 
-Deploy to Railway, Render, or Fly.io:
+1. **Create Railway account** at https://railway.app
 
-1. Push to GitHub
-2. Connect your repo to the platform
-3. Set environment variables
-4. Deploy - you'll get a permanent URL
+2. **Create new project** → "Deploy from GitHub repo" → Select your fork
+
+3. **Set environment variables** in Railway → Your service → Variables:
+
+   | Variable | Value |
+   |----------|-------|
+   | `NOTION_TOKEN` | `ntn_xxxxx...` (just the token, not `NOTION_TOKEN=ntn_xxx`) |
+   | `NOTION_DATABASE_ID` | `abc123...` (32-char ID from your Notion database URL) |
+   | `TWILIO_AUTH_TOKEN` | Your Twilio auth token |
+
+   > **Important:** Only paste the value itself, not `VAR_NAME=value`. Railway adds the variable name separately.
+
+4. **Deploy** - Railway auto-deploys on every push. Your URL will be:
+   ```
+   https://your-service-name.up.railway.app
+   ```
+
+5. **Configure Twilio webhook** to point to your Railway URL:
+   ```
+   https://your-service-name.up.railway.app/sms
+   ```
+
+6. **Verify** by hitting the health endpoint:
+   ```
+   https://your-service-name.up.railway.app/health
+   ```
+   Should return `{"status":"ok"}`
 
 ### Option B: Self-hosted with systemd
 
